@@ -27,8 +27,10 @@ Trading-Analytics-Dashboard/
 │   ├── services/
 │   │   └── TradeFetcher.ts       # Core fetching, decoding & price calculation
 │   ├── scripts/
-│   │   ├── run-fetch.ts          # Main execution script
-│   │   ├── test-final-parser.ts  # Parser validation with price tests
+│   │   └── run-fetch.ts          # Main execution script
+│   ├── tests/
+│   │   └── test-parser.ts        # Parser validation with price tests
+│   ├── utils/
 │   │   └── decode-history.ts     # Re-decode existing history with new logic
 │   └── index.ts                  # Module exports
 │

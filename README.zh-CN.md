@@ -27,8 +27,10 @@ Trading-Analytics-Dashboard/
 │   ├── services/
 │   │   └── TradeFetcher.ts       # 核心获取、解码及价格计算逻辑
 │   ├── scripts/
-│   │   ├── run-fetch.ts          # 主执行脚本
-│   │   ├── test-final-parser.ts  # 带价格测试的解析器验证
+│   │   └── run-fetch.ts          # 主执行脚本
+│   ├── tests/
+│   │   └── test-parser.ts        # 带价格测试的解析器验证
+│   ├── utils/
 │   │   └── decode-history.ts     # 使用新逻辑重新解码历史记录
 │   └── index.ts                  # 模块导出
 │
