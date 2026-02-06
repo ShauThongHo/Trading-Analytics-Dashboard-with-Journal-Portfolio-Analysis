@@ -1,38 +1,13 @@
 import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.js";
 import { Buffer } from "buffer";
 import * as fs from "fs";
-import { 
-    PerpFillOrderReportModel, 
-    PerpFeesReportModel,
-    PerpPlaceOrderReportModel,
-    PerpNewOrderReportModel,
-    PerpOrderCancelReportModel 
-} from "@deriverse/kit";
-import { TradeEvent, FeeEvent, OrderMgmtEvent, ParsedEvent } from "../types/trade";
+import { PerpFillOrderReportModel, PerpFeesReportModel } from "@deriverse/kit";
 
 /**
- * ═════════════════════════════════════════════════════════════════════════════
- * TradeFetcher - SDK-Based Implementation (Official @deriverse/kit)
- * ═════════════════════════════════════════════════════════════════════════════
+ * TradeFetcher - Trading history parser using @deriverse/kit SDK
  * 
- * PURPOSE: Fetch and parse trading history from Solana blockchain using the
- *          official @deriverse/kit SDK for accurate, maintainable parsing.
- * 
- * SDK MODELS USED:
- * - PerpFillOrderReportModel (trade execution events, tags 0x12/0x13/0x0A/0x0B)
- * - PerpFeesReportModel (fee events, tag 23)
- * - PerpPlaceOrderReportModel (order placement, tag 18) 
- * - PerpNewOrderReportModel (order confirmation, tag 20)
- * - PerpOrderCancelReportModel (order cancellation, tag 21)
- * 
- * HYBRID APPROACH (Best Practices):
- * ✓ SDK Models: Clean structure parsing via .fromBuffer()
- * ✓ Manual Calculation: Unit price = (crncy ÷ 1e6) / (perps ÷ 1e9)
- * ✓ Tag-Based Logic: Use discriminator for accurate Buy/Sell determination
- * ✗ SDK price field: NOT unit price (stores different scaled value)
- * ✗ SDK side field: Unreliable for FillOrder events
- * 
- * VALIDATED OUTPUT: Produces 100% accurate results matching manual decoder
+ * Integration Strategy:
+ * - Uses SDK models (PerpFillOrderReportModel, PerpFeesReportModel) for parsing
  * - Calculates unit price from crncy/perps (SDK's price field is not unit price)
  * - Maintains strict event type system matching UI requirements
  * 
@@ -40,6 +15,46 @@ import { TradeEvent, FeeEvent, OrderMgmtEvent, ParsedEvent } from "../types/trad
  * - Tag 19 (0x13): perpFillOrder - Executed trades
  * - Tag 23 (0x17): perpFees - Fee payments
  */
+
+// ============================================================================
+// EVENT TYPE DEFINITIONS (Strict UI Format)
+// ============================================================================
+
+interface BaseEvent {
+    type: "TRADE" | "FEE" | "ORDER";
+    instrument: "SOL/USDC";
+    signature: string;
+    timestamp: number;
+    originalLog: string;
+}
+
+export interface TradeEvent extends BaseEvent {
+    type: "TRADE";
+    orderId: string;
+    amount: string;          // Position size in SOL
+    price: string;           // Unit price (USDC per SOL)
+    orderType: "Market" | "Limit";
+    orderSide: "Bid" | "Ask";
+    role: "Taker" | "Maker";
+    tradeAction: "Buy" | "Sell";
+}
+
+export interface FeeEvent extends BaseEvent {
+    type: "FEE";
+    orderId: string;         // "N/A" for fees
+    amount: string;          // Fee amount in USDC
+}
+
+export interface OrderMgmtEvent extends BaseEvent {
+    type: "ORDER";
+    subType: "New Ask Order" | "Ask Order Cancel" | "New Bid Order" | "Bid Order Cancel";
+    orderId: string;
+    amount: string;
+    price: string;
+    orderSide: "Bid" | "Ask";
+}
+
+export type ParsedEvent = TradeEvent | FeeEvent | OrderMgmtEvent;
 
 // ============================================================================
 // TRADE FETCHER CLASS
@@ -202,122 +217,6 @@ export class TradeFetcher {
                 }
             }
 
-            // ================================================================
-            // CASE C: ORDER PLACEMENT (Tag 18 = perpPlaceOrder)
-            // ================================================================
-            if (tag === 18) {
-                try {
-                    const placeModel = PerpPlaceOrderReportModel.fromBuffer(buffer);
-                    
-                    // SDK Model Fields:
-                    // - tag, ioc, side, orderType, orderId, perps, price, instrId, leverage, time
-                    
-                    const amountSOL = Number(placeModel.perps) / 1_000_000_000;
-                    const priceValue = Number(placeModel.price) / 1_000_000;
-
-                    // Determine side from SDK side field (more reliable for PlaceOrder)
-                    const orderSide: "Bid" | "Ask" = placeModel.side === 0 ? "Bid" : "Ask";
-                    const action = placeModel.side === 0 ? "Buy" : "Sell";
-
-                    // Order type mapping from SDK
-                    let orderTypeStr = "Limit";
-                    if (placeModel.orderType === 1) orderTypeStr = "Market";
-                    else if (placeModel.orderType === 2) orderTypeStr = "PostOnly";
-
-                    const subType = orderSide === "Bid" ? "New Bid Order" : "New Ask Order";
-
-                    const orderEvent: OrderMgmtEvent = {
-                        type: "ORDER",
-                        subType: subType as any,
-                        instrument: "SOL/USDC",
-                        orderId: placeModel.orderId.toString(),
-                        amount: amountSOL.toFixed(2),
-                        price: priceValue.toFixed(2),
-                        orderType: orderTypeStr,
-                        signature: signature,
-                        timestamp: placeModel.time || blockTime,
-                        originalLog: log
-                    };
-
-                    return orderEvent;
-                } catch (error) {
-                    console.warn(`⚠️  SDK PlaceOrderModel parse error: ${error}`);
-                    return null;
-                }
-            }
-
-            // ================================================================
-            // CASE D: NEW ORDER CONFIRMATION (Tag 20 = perpNewOrder)
-            // ================================================================
-            if (tag === 20) {
-                try {
-                    const newOrderModel = PerpNewOrderReportModel.fromBuffer(buffer);
-                    
-                    // SDK Model Fields: tag, side, perps, crncy
-                    
-                    const amountSOL = Number(newOrderModel.perps) / 1_000_000_000;
-                    const quoteUSDC = Number(newOrderModel.crncy) / 1_000_000;
-                    const calculatedPrice = amountSOL > 0 ? quoteUSDC / amountSOL : 0;
-
-                    const orderSide: "Bid" | "Ask" = newOrderModel.side === 0 ? "Bid" : "Ask";
-                    const subType = orderSide === "Bid" ? "New Bid Order" : "New Ask Order";
-
-                    const orderEvent: OrderMgmtEvent = {
-                        type: "ORDER",
-                        subType: subType as any,
-                        instrument: "SOL/USDC",
-                        orderId: "N/A",
-                        amount: amountSOL.toFixed(2),
-                        price: calculatedPrice.toFixed(2),
-                        orderType: "Limit",
-                        signature: signature,
-                        timestamp: blockTime,
-                        originalLog: log
-                    };
-
-                    return orderEvent;
-                } catch (error) {
-                    console.warn(`⚠️  SDK NewOrderModel parse error: ${error}`);
-                    return null;
-                }
-            }
-
-            // ================================================================
-            // CASE E: ORDER CANCELLATION (Tag 21 = perpOrderCancel)
-            // ================================================================
-            if (tag === 21) {
-                try {
-                    const cancelModel = PerpOrderCancelReportModel.fromBuffer(buffer);
-                    
-                    // SDK Model Fields: tag, side, orderId, perps, crncy, time
-                    
-                    const amountSOL = Number(cancelModel.perps) / 1_000_000_000;
-                    const quoteUSDC = Number(cancelModel.crncy) / 1_000_000;
-                    const calculatedPrice = amountSOL > 0 ? quoteUSDC / amountSOL : 0;
-
-                    const orderSide: "Bid" | "Ask" = cancelModel.side === 0 ? "Bid" : "Ask";
-                    const subType = orderSide === "Bid" ? "Bid Order Cancel" : "Ask Order Cancel";
-
-                    const orderEvent: OrderMgmtEvent = {
-                        type: "ORDER",
-                        subType: subType as any,
-                        instrument: "SOL/USDC",
-                        orderId: cancelModel.orderId.toString(),
-                        amount: amountSOL.toFixed(2),
-                        price: calculatedPrice.toFixed(2),
-                        orderType: "Limit",
-                        signature: signature,
-                        timestamp: cancelModel.time || blockTime,
-                        originalLog: log
-                    };
-
-                    return orderEvent;
-                } catch (error) {
-                    console.warn(`⚠️  SDK CancelModel parse error: ${error}`);
-                    return null;
-                }
-            }
-
             // Unknown event type
             return null;
 
@@ -437,10 +336,9 @@ export class TradeFetcher {
     // PUBLIC API - Save to JSON
     // ========================================================================
     
-    /**
-     * Save parsed events to JSON file (BigInt-safe serialization)
-     */
-    public async saveToFile(events: ParsedEvent[], outputPath: string): Promise<void> {
+    public async fetchAndSave(outputPath: string): Promise<void> {
+        const events = await this.fetchAllTrades();
+        
         // BigInt-safe JSON serialization
         const jsonContent = JSON.stringify(events, (key, value) =>
             typeof value === "bigint" ? value.toString() : value
@@ -448,14 +346,6 @@ export class TradeFetcher {
 
         fs.writeFileSync(outputPath, jsonContent, "utf-8");
         console.log(`💾 Saved ${events.length} events to ${outputPath}`);
-    }
-    
-    /**
-     * Fetch and save in one call (convenience method)
-     */
-    public async fetchAndSave(outputPath: string): Promise<void> {
-        const events = await this.fetchAllTrades();
-        await this.saveToFile(events, outputPath);
     }
 }
 

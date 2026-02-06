@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "fetch:trades": "ts-node src/scripts/run-fetch.ts",
+    "fetch:trades:sdk": "ts-node src/scripts/test-sdk-fetcher.ts",
     "test:parser": "ts-node src/tests/test-parser.ts",
+    "test:sdk": "ts-node src/scripts/test-sdk-parser.ts",
     "decode:history": "ts-node src/utils/decode-history.ts",
     "build": "tsc",
     "dev": "ts-node-dev --respawn src/index.ts"
@@ -20,6 +22,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@deriverse/kit": "^1.0.39",
     "@solana/web3.js": "^1.87.6",
     "dotenv": "^16.3.1"
   },

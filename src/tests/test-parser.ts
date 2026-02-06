@@ -1,5 +1,5 @@
 /**
- * Final Parser Test - Validates FEE and TRADE event mappings
+ * Final Parser Test - Validates FEE and TRADE event mappings with orderType & role
  */
 
 import { Buffer } from 'buffer';
@@ -15,21 +15,36 @@ const TEST_CASES = [
     expectedPrice: "0",
   },
   {
-    name: "TRADE Event - LONG (0x12, 48 bytes)",
-    log: "EgABAZIDAAAhtF8AAAAAAADh9QUAAAAAADOmHBQAAAAAAAAACgAAAFNZhWkAAAAA",
+    name: "TRADE - Market Taker (0x13, Byte4=1)",
+    log: "EwAAAAEAAAAWu18AAAAAAAAtMQEAAAAAkD8XAAAAAAAAja68EQAAAF8AAAAAAAAA",
     expectedAction: "TRADE",
-    expectedSide: "LONG",
-    expectedSize: "0.100000000", // 100000000 / 1e9
-    expectedPrice: "863800.00", // quoteAmount(86380) / size(0.1)
-    expectedTimestamp: 1770346835,
+    expectedSide: "SHORT",
+    expectedOrderType: "Market",
+    expectedRole: "Taker",
+    expectedSize: "0.020000000",
+    expectedPrice: "76.18",
+    expectedTimestamp: 1770348400,
   },
   {
-    name: "TRADE Event - LONG (0x12, 40 bytes)",
-    log: "EgAAAZIDAACyr18AAAAAAADC6wsAAAAAAH6ovw8AAAAAAAAAJFSFaQ==",
+    name: "TRADE - Limit Taker (0x13, Byte4=2)",
+    log: "EwAAAAIAAAA3tV8AAAAAAIDR8AgAAAAA7HGwAAAAAACADOzyEQAAANICAAAAAAAA",
     expectedAction: "TRADE",
-    expectedSide: "LONG",
-    expectedSize: "0.200000000", // 200000000 / 1e9
-    expectedPrice: "338200.00", // quoteAmount(67640) / size(0.2)
+    expectedSide: "SHORT",
+    expectedOrderType: "Limit",
+    expectedRole: "Taker",
+    expectedSize: "0.150000000",
+    expectedPrice: "77.09",
+    expectedTimestamp: 1770347034,
+  },
+  {
+    name: "TRADE - Limit Maker (0x0B, Byte4=0)",
+    log: "CwAAAAAAAAAAAAAAAAAAAADC6wsAAAAAmODrAAAAAADAmPr+EQAAAAAAAAAAAAAA",
+    expectedAction: "TRADE",
+    expectedSide: "SHORT",
+    expectedOrderType: "Limit",
+    expectedRole: "Maker",
+    expectedSize: "0.200000000",
+    expectedPrice: "77.29",
     expectedTimestamp: 1770345508,
   },
 ];
@@ -69,6 +84,21 @@ function parseLog(log: string, blockTime: number): any {
       data.side = "LONG";
     } else if (discriminator === 0x13 || discriminator === 0x0B) {
       data.side = "SHORT";
+    }
+    
+    // Determine Role (Maker vs Taker) based on Discriminator
+    if (discriminator === 0x0A || discriminator === 0x0B) {
+      data.role = "Maker"; // Passive orders
+    } else {
+      data.role = "Taker"; // Aggressive orders
+    }
+    
+    // Determine Order Type (Market vs Limit) based on Byte 4
+    const orderTypeRaw = buffer.readUInt8(4);
+    if (orderTypeRaw === 1) {
+      data.orderType = "Market";
+    } else {
+      data.orderType = "Limit"; // 0 and 2 are Limit orders
     }
     
     // Timestamp from last bytes
@@ -121,6 +151,8 @@ for (const test of TEST_CASES) {
   const checks = {
     action: result.action === test.expectedAction,
     side: !test.expectedSide || result.side === test.expectedSide,
+    orderType: !test.expectedOrderType || result.orderType === test.expectedOrderType,
+    role: !test.expectedRole || result.role === test.expectedRole,
     size: result.size === test.expectedSize,
     price: result.price === test.expectedPrice,
     fee: !test.expectedFee || result.fee === test.expectedFee,
@@ -130,6 +162,12 @@ for (const test of TEST_CASES) {
   console.log(`  Action:    ${result.action} ${checks.action ? '✅' : '❌'} (expected: ${test.expectedAction})`);
   if (test.expectedSide) {
     console.log(`  Side:      ${result.side} ${checks.side ? '✅' : '❌'} (expected: ${test.expectedSide})`);
+  }
+  if (test.expectedOrderType) {
+    console.log(`  OrderType: ${result.orderType} ${checks.orderType ? '✅' : '❌'} (expected: ${test.expectedOrderType})`);
+  }
+  if (test.expectedRole) {
+    console.log(`  Role:      ${result.role} ${checks.role ? '✅' : '❌'} (expected: ${test.expectedRole})`);
   }
   console.log(`  Size:      ${result.size} ${checks.size ? '✅' : '❌'} (expected: ${test.expectedSize})`);
   console.log(`  Price:     ${result.price} ${checks.price ? '✅' : '❌'} (expected: ${test.expectedPrice})`);

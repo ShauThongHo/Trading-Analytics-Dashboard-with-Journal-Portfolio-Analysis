@@ -49,6 +49,51 @@ export interface TradeRecord {
   originalLog: string;
 }
 
+// ============================================================================
+// EVENT TYPE DEFINITIONS (SDK-Based Parser)
+// ============================================================================
+
+// Common fields for all events
+interface BaseEvent {
+    type: "TRADE" | "FEE" | "ORDER";
+    instrument: "SOL/USDC";
+    signature: string;
+    timestamp: number;
+    originalLog: string;
+}
+
+// 1. Taker/Maker Trade Event
+export interface TradeEvent extends BaseEvent {
+    type: "TRADE";
+    orderId: string;
+    amount: string;
+    price: string;
+    orderType: "Market" | "Limit";
+    orderSide: "Bid" | "Ask";
+    role: "Taker" | "Maker";
+    tradeAction: "Buy" | "Sell";
+}
+
+// 2. Fee Event
+export interface FeeEvent extends BaseEvent {
+    type: "FEE";
+    orderId: string;
+    amount: string;
+}
+
+// 3. Order Management Event (New/Cancel)
+export interface OrderMgmtEvent extends BaseEvent {
+    type: "ORDER";
+    subType: "New Ask Order" | "Ask Order Cancel" | "New Bid Order" | "Bid Order Cancel";
+    orderId: string;
+    amount: string;
+    price: string;
+    orderType: string;
+}
+
+// Union Type for any parsed event
+export type ParsedEvent = TradeEvent | FeeEvent | OrderMgmtEvent;
+
 /**
  * Partial trade data extracted from logs before validation
  */
