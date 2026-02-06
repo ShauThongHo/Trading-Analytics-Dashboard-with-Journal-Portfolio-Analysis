@@ -41,28 +41,30 @@ async function main() {
     console.log('⏳ Fetching trading history...\n');
     const startTime = Date.now();
     
-    const trades = await fetcher.fetchAllTrades();
+    const events = await fetcher.fetchAllTrades();
     
     const endTime = Date.now();
     const duration = ((endTime - startTime) / 1000).toFixed(2);
 
     console.log(`\n✅ Fetch completed in ${duration}s`);
-    console.log(`📊 Total trades found: ${trades.length}`);
+    console.log(`📊 Total events found: ${events.length}`);
 
     // Save to JSON
     const outputPath = path.join(process.cwd(), 'data', 'history.json');
-    await fetcher.saveToFile(trades, outputPath);
+    await fetcher.saveToFile(events, outputPath);
 
-    // Display sample trades
-    if (trades.length > 0) {
-      console.log('\n📋 Sample Trades (first 3):');
-      trades.slice(0, 3).forEach((trade, idx) => {
-        console.log(`\n  [${idx + 1}] Signature: ${trade.signature.slice(0, 20)}...`);
-        console.log(`      Timestamp: ${new Date(trade.timestamp * 1000).toISOString()}`);
-        console.log(`      Market: ${trade.market}`);
-        console.log(`      Side: ${trade.side}`);
-        console.log(`      Size: ${trade.size}`);
-        console.log(`      Price: ${trade.price}`);
+    // Display sample events
+    if (events.length > 0) {
+      console.log('\n📋 Sample Events (first 3):');
+      events.slice(0, 3).forEach((event, idx) => {
+        console.log(`\n${idx + 1}. ${event.type} Event`);
+        console.log(`   Signature: ${event.signature.substring(0, 8)}...`);
+        console.log(`   Timestamp: ${new Date(event.timestamp * 1000).toISOString()}`);
+        if (event.type === 'TRADE') {
+          console.log(`   Order: ${event.tradeAction} ${event.amount} @ ${event.price}`);
+        } else if (event.type === 'FEE') {
+          console.log(`   Fee Amount: ${event.amount} USDC`);
+        }
       });
     }
 

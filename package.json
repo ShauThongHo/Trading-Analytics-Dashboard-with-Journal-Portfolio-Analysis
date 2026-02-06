@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "fetch:trades": "ts-node src/scripts/run-fetch.ts",
+    "test:parser": "ts-node src/scripts/test-final-parser.ts",
+    "decode:history": "ts-node src/scripts/decode-history.ts",
     "build": "tsc",
     "dev": "ts-node-dev --respawn src/index.ts"
   },

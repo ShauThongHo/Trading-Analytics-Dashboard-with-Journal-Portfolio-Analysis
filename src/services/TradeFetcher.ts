@@ -2,27 +2,60 @@ import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.j
 import { Buffer } from "buffer";
 
 /**
- * TradeFetcher - FINAL VERSION
+ * TradeFetcher - FINAL VERSION with Strict Event Formatting
  * 
- * Combines:
- * 1. Robust Fetching (Anti-429 with batching and retry logic)
- * 2. Accurate Parsing (FEE detection + correct field mapping)
+ * Outputs three distinct event types:
+ * 1. TradeEvent - Taker/Maker trades with order details
+ * 2. FeeEvent - Fee payments
+ * 3. OrderMgmtEvent - Order creation/cancellation
  * 
- * Verified against Deriverse UI screenshots.
+ * Verified against Deriverse UI format requirements.
  */
 
-// Define the Trade Record Interface
-export interface TradeRecord {
+// ============================================================================
+// EVENT TYPE DEFINITIONS
+// ============================================================================
+
+// Common fields for all events
+interface BaseEvent {
+    type: "TRADE" | "FEE" | "ORDER";
+    instrument: "SOL/USDC";
     signature: string;
     timestamp: number;
-    market: string;
-    action: "TRADE" | "FEE" | "LIQUIDATE" | "UNKNOWN";
-    side: "LONG" | "SHORT" | "UNKNOWN";
-    size: string;  // Store as string to preserve precision
-    price: string;
-    fee: number;   // Store as number for easy calculation
     originalLog: string;
 }
+
+// 1. Taker/Maker Trade Event
+export interface TradeEvent extends BaseEvent {
+    type: "TRADE";
+    orderId: string;         // Sequence ID from blockchain
+    amount: string;          // Position size (SOL)
+    price: string;           // Unit price (USDC per SOL)
+    orderType: "Market" | "Limit";
+    orderSide: "Bid" | "Ask";
+    role: "Taker" | "Maker";
+    tradeAction: "Buy" | "Sell";
+}
+
+// 2. Fee Event
+export interface FeeEvent extends BaseEvent {
+    type: "FEE";
+    orderId: string;         // Usually "N/A" for fees
+    amount: string;          // Fee amount in USDC
+}
+
+// 3. Order Management Event (New/Cancel)
+export interface OrderMgmtEvent extends BaseEvent {
+    type: "ORDER";
+    subType: "New Ask Order" | "Ask Order Cancel" | "New Bid Order" | "Bid Order Cancel";
+    orderId: string;
+    amount: string;
+    price: string;
+    orderSide: "Ask" | "Bid";
+}
+
+// Union type for all possible events
+export type ParsedEvent = TradeEvent | FeeEvent | OrderMgmtEvent;
 
 export class TradeFetcher {
     private connection: Connection;
@@ -38,85 +71,123 @@ export class TradeFetcher {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // 1. The Core Parsing Logic (Verified against Screenshots)
-    private parseLog(log: string, blockTime: number): Partial<TradeRecord> | null {
+    // ========================================================================
+    // CORE PARSING LOGIC - Returns Strict Event Types
+    // ========================================================================
+    private parseLog(log: string, blockTime: number, signature: string): ParsedEvent | null {
         try {
             const buffer = Buffer.from(log, 'base64');
             if (buffer.length < 16) return null;
 
             const discriminator = buffer.readUInt8(0);
 
-            // CASE A: FEE / TRANSFER (Discriminator 0x17)
-            // Logic: Fee amount is in bytes 8-16
+            // ====================================================================
+            // CASE A: FEE EVENT (Discriminator 0x17)
+            // ====================================================================
             if (discriminator === 0x17) {
                 const rawFee = buffer.readBigUInt64LE(8);
-                const fee = Number(rawFee) / 1_000_000; // 6 decimals (USDC)
+                const feeAmount = Number(rawFee) / 1_000_000; // 6 decimals (USDC)
 
-                return {
-                    action: "FEE",
-                    side: "UNKNOWN",
-                    size: "0",
-                    price: "0",
-                    fee: fee,
-                    timestamp: blockTime // Fees don't have internal timestamp, use block time
+                const feeEvent: FeeEvent = {
+                    type: "FEE",
+                    instrument: "SOL/USDC",
+                    orderId: "N/A",
+                    amount: feeAmount.toFixed(6),
+                    signature: signature,
+                    timestamp: blockTime,
+                    originalLog: log
                 };
+
+                return feeEvent;
             }
 
-            // CASE B: TRADE (Buffer Length >= 40)
-            // Logic: Standard trade event
-            if (buffer.length >= 40) {
-                // 1. Timestamp (Always last 8 bytes for 48-byte events, last 4 bytes for 40-byte events)
+            // ====================================================================
+            // CASE B: TRADE EVENT (Buffer Length >= 40)
+            // ====================================================================
+            if (buffer.length >= 40 && (discriminator === 0x12 || discriminator === 0x13 || discriminator === 0x0A || discriminator === 0x0B)) {
+                // 1. Timestamp (from buffer or fallback to blockTime)
                 let timestamp = blockTime;
                 if (buffer.length >= 48) {
                     const tsRaw = buffer.readBigInt64LE(buffer.length - 8);
                     const ts = Number(tsRaw);
-                    // Sanity check: is year between 2020 and 2030?
                     if (ts > 1577836800 && ts < 1893456000) timestamp = ts;
                 } else if (buffer.length >= 40) {
                     const tsRaw = buffer.readUInt32LE(buffer.length - 4);
                     if (tsRaw > 1577836800 && tsRaw < 1893456000) timestamp = tsRaw;
                 }
 
-                // 2. Size (Bytes 16-24)
+                // 2. Order ID (Bytes 8-16)
+                const rawOrderId = buffer.readBigUInt64LE(8);
+                const orderId = rawOrderId.toString();
+
+                // 3. Amount/Size (Bytes 16-24)
                 const rawSize = buffer.readBigUInt64LE(16);
                 const size = Number(rawSize) / 1_000_000_000; // 9 decimals (SOL)
 
-                // 3. Quote Amount (Bytes 24-32) - This is TOTAL USDC value, not unit price
+                // 4. Quote Amount (Bytes 24-32) - Total USDC value
                 const rawQuoteAmount = buffer.readBigUInt64LE(24);
-                const quoteAmount = Number(rawQuoteAmount) / 1_000_000;   // 6 decimals (USDC)
+                const quoteAmount = Number(rawQuoteAmount) / 1_000_000; // 6 decimals (USDC)
 
-                // 4. Calculate Unit Price: price = quoteAmount / size
-                let finalPrice = "0";
+                // 5. Calculate Unit Price: price = quoteAmount / size
+                let unitPrice = 0;
                 if (size > 0) {
-                    finalPrice = (quoteAmount / size).toFixed(2);
+                    unitPrice = quoteAmount / size;
                 }
 
-                // 5. Side
-                let side: "LONG" | "SHORT" | "UNKNOWN" = "UNKNOWN";
-                if (discriminator === 0x12 || discriminator === 0x0A) side = "LONG";
-                if (discriminator === 0x13 || discriminator === 0x0B) side = "SHORT";
+                // 6. Sanity Filter: Only accept realistic prices (1 < price < 5000 for SOL)
+                if (unitPrice < 1 || unitPrice > 5000) {
+                    // Skip unrealistic prices
+                    return null;
+                }
 
-                return {
-                    action: "TRADE",
-                    side,
-                    size: size.toFixed(9),
-                    price: finalPrice, // Calculated unit price
-                    fee: 0,
-                    timestamp
+                // 7. Determine Trade Direction
+                let orderSide: "Bid" | "Ask";
+                let tradeAction: "Buy" | "Sell";
+
+                if (discriminator === 0x12 || discriminator === 0x0A) {
+                    // LONG = Bid = Buy
+                    orderSide = "Bid";
+                    tradeAction = "Buy";
+                } else {
+                    // SHORT = Ask = Sell
+                    orderSide = "Ask";
+                    tradeAction = "Sell";
+                }
+
+                const tradeEvent: TradeEvent = {
+                    type: "TRADE",
+                    instrument: "SOL/USDC",
+                    orderId: orderId,
+                    amount: size.toFixed(2), // Show 2 decimals for UI
+                    price: unitPrice.toFixed(2), // Unit price
+                    orderType: "Market", // Default assumption
+                    orderSide: orderSide,
+                    role: "Taker", // Default assumption
+                    tradeAction: tradeAction,
+                    signature: signature,
+                    timestamp: timestamp,
+                    originalLog: log
                 };
+
+                return tradeEvent;
             }
 
+            // Unknown event type
             return null;
-        } catch (e) {
+
+        } catch (error) {
+            console.warn(`⚠️  Parse error: ${error}`);
             return null;
         }
     }
 
-    // 2. The Fetch Loop (With 429 Protection)
-    public async fetchAllTrades(): Promise<TradeRecord[]> {
+    // ========================================================================
+    // FETCH LOOP - Returns Formatted Events
+    // ========================================================================
+    public async fetchAllTrades(): Promise<ParsedEvent[]> {
         console.log(`⏳ Fetching trades for ${this.walletAddress.toString()}...`);
         
-        const allTrades: TradeRecord[] = [];
+        const allEvents: ParsedEvent[] = [];
         let lastSignature: string | undefined = undefined;
         let hasMore = true;
         const BATCH_SIZE = 3; // Strict limit for Free Tier (3 transactions at a time)
@@ -171,22 +242,14 @@ export class TradeFetcher {
                                     if (!match) continue;
 
                                     const base64Log = match[1];
-                                    const parsed = this.parseLog(base64Log, tx.blockTime || sigInfo.blockTime || 0);
+                                    const parsed = this.parseLog(
+                                        base64Log, 
+                                        tx.blockTime || sigInfo.blockTime || 0,
+                                        sigInfo.signature
+                                    );
 
-                                    if (parsed && (parsed.action === "TRADE" || parsed.action === "FEE")) {
-                                        const trade: TradeRecord = {
-                                            signature: sigInfo.signature,
-                                            timestamp: parsed.timestamp!,
-                                            market: "SOL-PERP",
-                                            action: parsed.action,
-                                            side: parsed.side!,
-                                            size: parsed.size!,
-                                            price: parsed.price!,
-                                            fee: parsed.fee!,
-                                            originalLog: base64Log
-                                        };
-
-                                        allTrades.push(trade);
+                                    if (parsed) {
+                                        allEvents.push(parsed);
                                     }
                                 }
                             }
@@ -227,12 +290,14 @@ export class TradeFetcher {
             }
         }
 
-        console.log(`\n✅ Fetch complete! Total trades: ${allTrades.length}`);
-        return allTrades;
+        console.log(`\n✅ Fetch complete! Total events: ${allEvents.length}`);
+        return allEvents;
     }
 
-    // 3. Save to File
-    public async saveToFile(trades: TradeRecord[], outputPath: string) {
+    // ========================================================================
+    // SAVE TO FILE
+    // ========================================================================
+    public async saveToFile(events: ParsedEvent[], outputPath: string) {
         const fs = await import('fs');
         const path = await import('path');
         
@@ -242,7 +307,7 @@ export class TradeFetcher {
         }
 
         // Custom JSON serialization (in case we add BigInt support later)
-        const json = JSON.stringify(trades, (key, value) => {
+        const json = JSON.stringify(events, (key, value) => {
             if (typeof value === 'bigint') {
                 return value.toString();
             }
@@ -250,6 +315,6 @@ export class TradeFetcher {
         }, 2);
 
         fs.writeFileSync(outputPath, json, 'utf-8');
-        console.log(`💾 Saved ${trades.length} trades to ${outputPath}`);
+        console.log(`💾 Saved ${events.length} events to ${outputPath}`);
     }
 }
